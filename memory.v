@@ -1,18 +1,20 @@
 module memory(
+  input clk,
   input [31:0] address,
   input [31:0] data_in,
-  output reg [31:0] data_out,
+  output [31:0] data_out,
   input we
 );
 
 reg [31:0] mem[0:1024]; // 16KB de memória
 integer i;
 
-always @(address or data_in or we) begin
+assign data_out = mem[address[13:2]];
+
+always @(posedge clk) begin
   if (we) begin
     mem[address[13:2]] = data_in;
   end
-  data_out = mem[address[13:2]];
 end
 
 
