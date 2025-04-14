@@ -187,6 +187,17 @@ module control (
                 result_src = `RES_SRC_ALU_OUT;
             end
 
+            `CTRL_FSM_EXEC_I: begin
+                instr_write = 0;
+                reg_write = 0;
+                mem_write = 0;
+                pc_write = 0;
+
+
+                alu_src_a = `ALU_SRC_A_RS1;
+                alu_src_b = `ALU_SRC_B_IMM;
+            end
+
             `CTRL_FSM_EXEC_R: begin
                 instr_write = 0;
                 reg_write = 0;
@@ -195,6 +206,14 @@ module control (
 
                 alu_src_a = `ALU_SRC_A_RS1;
                 alu_src_b = `ALU_SRC_B_RS2;
+            end
+
+            `CTRL_FSM_ALUWB: begin
+                instr_write = 0;
+                reg_write = 1;
+                mem_write = 0;
+                pc_write = 0;
+
                 result_src = `RES_SRC_ALU_OUT;
             end
         endcase
