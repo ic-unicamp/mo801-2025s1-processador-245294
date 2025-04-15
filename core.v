@@ -9,13 +9,12 @@ module core ( // modulo de um core
   output reg we // write enable
 );
 
-    wire addr_src; // control signal
     reg [31:0] pc;
     always @(posedge clk) begin
         if (pc_write == 1'b1) pc <= result;
     end
 
-
+    wire addr_src; // control signal
     always @(*) begin
         case (addr_src)
             `ADDR_SRC_PC: address = pc;
@@ -24,9 +23,13 @@ module core ( // modulo de um core
     end
 
     reg [31:0] instr;
+    reg [31:0] old_pc; // used for branches
     wire instr_write; // control signal
     always @(posedge clk) begin
-        if (instr_write == 1'b1) instr <= data_in;
+        if (instr_write == 1'b1) begin
+            instr <= data_in;
+            old_pc <= pc;
+        end
     end
 
     reg [31:0] mem_data;
@@ -66,25 +69,26 @@ module core ( // modulo de um core
     wire [31:0] alu_result;
     reg [31:0] alu_out;
     reg [31:0] src_a, src_b;
+    wire alu_branch_flag;
     alu alu (
         .src_a(src_a),
         .src_b(src_b),
         .ctrl(alu_ctrl),
-        .out(alu_result)
+        .out(alu_result),
+        .branch_flag(alu_branch_flag)
     );
     always @(posedge clk) alu_out <= alu_result;
     always @(*) begin
         case (alu_src_a)
             `ALU_SRC_A_PC: src_a = pc;
             `ALU_SRC_A_RS1: src_a = reg_read_data_1;
-            // FIXME: fill the missing option
+            `ALU_SRC_A_OLD_PC: src_a = old_pc;
         endcase
 
         case (alu_src_b)
             `ALU_SRC_B_IMM: src_b = imm_ext;
             `ALU_SRC_B_4: src_b = 32'h4;
             `ALU_SRC_B_RS2: src_b = reg_read_data_2;
-            // FIXME: fill the missing option
         endcase
     end
 
@@ -106,6 +110,7 @@ module core ( // modulo de um core
         .clk(clk),
         .reset(resetn),
         .instr(instr),
+        .alu_branch_flag(alu_branch_flag),
         .pc_write(pc_write),
         .addr_src(addr_src),
         .mem_write(mem_write),
