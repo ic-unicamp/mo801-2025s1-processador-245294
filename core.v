@@ -38,7 +38,7 @@ module core ( // modulo de um core
     end
 
     wire [31:0] imm_ext;
-    wire [1:0] imm_src; // control signal
+    wire [2:0] imm_src; // control signal
     immext immext (
         .instr(instr),
         .imm_src(imm_src),
@@ -52,6 +52,9 @@ module core ( // modulo de um core
     wire [31:0] reg_write_data = result;
     wire [31:0] reg_read_data_1;
     wire [31:0] reg_read_data_2;
+    wire [1:0] data_size;
+    wire data_unsigned;
+
     regfile regfile (
         .clk(clk),
         .write_enable(reg_write),
@@ -59,6 +62,8 @@ module core ( // modulo de um core
         .addr_2(reg_addr_2),
         .addr_3(reg_addr_3),
         .write_data(reg_write_data),
+        .data_size(data_size),
+        .data_unsigned(data_unsigned),
         .read_data_1(reg_read_data_1),
         .read_data_2(reg_read_data_2)
     );
@@ -83,6 +88,7 @@ module core ( // modulo de um core
             `ALU_SRC_A_PC: src_a = pc;
             `ALU_SRC_A_RS1: src_a = reg_read_data_1;
             `ALU_SRC_A_OLD_PC: src_a = old_pc;
+            `ALU_SRC_A_ZERO: src_a = 32'b0;
         endcase
 
         case (alu_src_b)
@@ -99,6 +105,7 @@ module core ( // modulo de um core
             `RES_SRC_ALU_OUT: result = alu_out;
             `RES_SRC_MEM_DATA: result = mem_data;
             `RES_SRC_ALU_RESULT: result = alu_result;
+            `RES_SRC_IMM: result = imm_ext;
         endcase
     end
 
@@ -120,7 +127,9 @@ module core ( // modulo de um core
         .result_src(result_src),
         .alu_ctrl(alu_ctrl),
         .alu_src_a(alu_src_a),
-        .alu_src_b(alu_src_b)
+        .alu_src_b(alu_src_b),
+        .data_size(data_size),
+        .data_unsigned(data_unsigned)
     );
 
     always @(*) we = mem_write;

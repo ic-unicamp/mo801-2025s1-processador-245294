@@ -60,11 +60,13 @@ module control (
     output reg mem_write,
     output reg instr_write,
     output reg reg_write,
-    output reg [1:0] imm_src,
+    output reg [2:0] imm_src,
     output reg [1:0] result_src,
     output wire [3:0] alu_ctrl,
     output reg [1:0] alu_src_a,
-    output reg [1:0] alu_src_b
+    output reg [1:0] alu_src_b,
+    output reg [1:0] data_size,
+    output reg data_unsigned
 );
 
     reg [3:0] state;
@@ -78,7 +80,6 @@ module control (
     reg [1:0] alu_op;
     reg pc_update;      // should update pc = pc + 4
     reg branch;         // is a branch instr
-    reg jump;           // is a jump instr
     reg take_branch;    // whether to take the branch (based on ALU output)
 
     // funct3[0] tells us whether take_branch = alu_zero or !alu_zero
@@ -91,11 +92,12 @@ module control (
     end
 
     // update pc on three occasions:
-    // - updating pc <= pc + 4 during the fetch stage
-    // - jump during a jump stage
-    // - jump if alu result is zero during a branch stage
+    // - updating pc <= pc + 4 during the fetch stage (pc_update=1)
+    // - jump during a jump stage (pc_update = 1)
+    // - jump if take_branch is set during a branch stage (branch=1 and
+    //   take_branch = 1)
     always @(*) begin
-        pc_write = pc_update | jump | (branch & take_branch);
+        pc_write = pc_update | (branch & take_branch);
     end
 
     assign op = instr[6:0];
@@ -106,10 +108,11 @@ module control (
     // define the imm_src derived from the instruction type (combinational)
     always @(*) begin
         case (op)
-            `OPCODE_LOAD, `OPCODE_I_TYPE: imm_src = `IMM_TYPE_I;
+            `OPCODE_LOAD, `OPCODE_I_TYPE, `OPCODE_JALR: imm_src = `IMM_TYPE_I;
             `OPCODE_STORE: imm_src = `IMM_TYPE_S;
             `OPCODE_BRANCH: imm_src = `IMM_TYPE_B;
             `OPCODE_JAL: imm_src = `IMM_TYPE_J;
+            `OPCODE_LUI, `OPCODE_AUIPC: imm_src = `IMM_TYPE_U;
         endcase
     end
 
@@ -121,6 +124,29 @@ module control (
         .alu_ctrl(alu_ctrl)
     );
 
+    // generate the size/signext signals for load/store
+    always @(*) begin
+        // extract data size from funct3[1:0]
+        case (op)
+            // sb/lb: funct3 == 0b000
+            // sh/lh: funct3 == 0b001
+            // sw/lw: funct3 == 0b010
+            `OPCODE_LOAD, `OPCODE_STORE: data_size = funct3[1:0];
+            default: data_size = `SIZE_WORD;
+        endcase
+
+        // extract signedness from funct[2] (for load instrs only)
+        case (op)
+            // lb: funct3  == 0b000
+            // lh: funct3  == 0b001
+            // lbu: funct3 == 0b100
+            // lhu: funct3 == 0b101
+            `OPCODE_LOAD: data_unsigned = funct3[2];
+            default: data_unsigned = 1'b0;
+
+        endcase
+    end
+
     // update state on rising edge
     always @(posedge clk) begin
         if (reset == 1'b0) begin
@@ -130,6 +156,7 @@ module control (
     end
 
     // FSM state transitions (combinational)
+    // FIXME: ensure we NOP upon on invalid instructions
     always @(*) begin
         next_state = `CTRL_FSM_FETCH;
         case (state)
@@ -141,7 +168,11 @@ module control (
                     `OPCODE_R_TYPE: next_state = `CTRL_FSM_EXEC_R;
                     `OPCODE_I_TYPE: next_state = `CTRL_FSM_EXEC_I;
                     `OPCODE_JAL: next_state = `CTRL_FSM_JAL;
+                    `OPCODE_JALR: next_state = `CTRL_FSM_EXEC_JALR;
                     `OPCODE_BRANCH: next_state = `CTRL_FSM_BEQ;
+                    `OPCODE_LUI: next_state = `CTRL_FSM_LUIWB;
+                    `OPCODE_AUIPC: next_state = `CTRL_FSM_EXEC_AUIPC;
+                    default: next_state = `CTRL_FSM_FETCH;
                 endcase
             end
             `CTRL_FSM_MEMADR: begin
@@ -152,9 +183,10 @@ module control (
                     default: next_state = `CTRL_FSM_FETCH;
                 endcase
             end
-            `CTRL_FSM_EXEC_R, `CTRL_FSM_EXEC_I, `CTRL_FSM_JAL: next_state = `CTRL_FSM_ALUWB;
+            `CTRL_FSM_EXEC_R, `CTRL_FSM_EXEC_I, `CTRL_FSM_JAL, `CTRL_FSM_EXEC_AUIPC: next_state = `CTRL_FSM_ALUWB;
             `CTRL_FSM_MEMREAD: next_state = `CTRL_FSM_MEMWB;
-            `CTRL_FSM_MEMWB, `CTRL_FSM_MEMWRITE, `CTRL_FSM_ALUWB, `CTRL_FSM_BEQ: next_state = `CTRL_FSM_FETCH;
+            `CTRL_FSM_EXEC_JALR: next_state = `CTRL_FSM_JALRWB;
+            `CTRL_FSM_MEMWB, `CTRL_FSM_MEMWRITE, `CTRL_FSM_ALUWB, `CTRL_FSM_JALRWB, `CTRL_FSM_BEQ, `CTRL_FSM_LUIWB: next_state = `CTRL_FSM_FETCH;
             // should never happen
             default: next_state = `CTRL_FSM_FETCH;
         endcase
@@ -171,7 +203,6 @@ module control (
                 reg_write = 0;
                 mem_write = 0;
                 pc_update = 1;
-                jump = 0;
                 branch = 0;
 
                 addr_src = `ADDR_SRC_PC;
@@ -188,7 +219,6 @@ module control (
                 reg_write = 0;
                 mem_write = 0;
                 pc_update = 0;
-                jump = 0;
                 branch = 0;
 
                 // calculate old_pc += imm since the ALU is idle during decode
@@ -202,7 +232,6 @@ module control (
                 reg_write = 0;
                 mem_write = 0;
                 pc_update = 0;
-                jump = 0;
                 branch = 0;
 
                 // alu_ctrl = `ALU_CMD_ADD;
@@ -216,7 +245,6 @@ module control (
                 reg_write = 0;
                 mem_write = 0;
                 pc_update = 0;
-                jump = 0;
                 branch = 0;
 
                 addr_src = `ADDR_SRC_RESULT;
@@ -228,7 +256,6 @@ module control (
                 reg_write = 1;
                 mem_write = 0;
                 pc_update = 0;
-                jump = 0;
                 branch = 0;
 
                 result_src = `RES_SRC_MEM_DATA;
@@ -239,7 +266,6 @@ module control (
                 reg_write = 0;
                 mem_write = 1;
                 pc_update = 0;
-                jump = 0;
                 branch = 0;
 
                 addr_src = `ADDR_SRC_RESULT;
@@ -251,7 +277,6 @@ module control (
                 reg_write = 0;
                 mem_write = 0;
                 pc_update = 0;
-                jump = 0;
                 branch = 0;
 
                 alu_op = `ALU_OP_EVAL;
@@ -264,7 +289,6 @@ module control (
                 reg_write = 0;
                 mem_write = 0;
                 pc_update = 0;
-                jump = 0;
                 branch = 0;
 
                 alu_op = `ALU_OP_EVAL;
@@ -272,12 +296,12 @@ module control (
                 alu_src_b = `ALU_SRC_B_RS2;
             end
 
+            // store rd = alu_out
             `CTRL_FSM_ALUWB: begin
                 instr_write = 0;
                 reg_write = 1;
                 mem_write = 0;
                 pc_update = 0;
-                jump = 0;
                 branch = 0;
 
                 result_src = `RES_SRC_ALU_OUT;
@@ -288,7 +312,6 @@ module control (
                 reg_write = 0;
                 mem_write = 0;
                 pc_update = 0;
-                jump = 0;
                 branch = 1;
 
                 // compare the source registers
@@ -298,18 +321,75 @@ module control (
                 result_src = `RES_SRC_ALU_OUT;
             end
 
+            // we calculated pc + imm during decode; store
+            // pc = pc + imm and calculate old_pc + 4 to store
+            // during CTRL_FSM_ALUWB
             `CTRL_FSM_JAL: begin
                 instr_write = 0;
                 reg_write = 1;
                 mem_write = 0;
                 pc_update = 1;
-                jump = 1;
                 branch = 0;
 
                 alu_op = `ALU_OP_ADD;
                 alu_src_a = `ALU_SRC_A_OLD_PC;
                 alu_src_b = `ALU_SRC_B_4;
                 result_src = `RES_SRC_ALU_OUT;
+            end
+
+            // calculate and store pc = rs1 + imm
+            // NOTE: we explicitly don't zero the last bit of rs1 + imm since
+            // we don't support misaligned accesses anyway
+            `CTRL_FSM_EXEC_JALR: begin
+                instr_write = 0;
+                reg_write = 0;
+                mem_write = 0;
+                pc_update = 1;
+                branch = 0;
+
+                alu_op = `ALU_OP_ADD;
+                alu_src_a = `ALU_SRC_A_RS1;
+                alu_src_b = `ALU_SRC_B_IMM;
+                result_src = `RES_SRC_ALU_RESULT;
+            end
+
+            // store rd = pc + 4
+            `CTRL_FSM_JALRWB: begin
+                instr_write = 0;
+                reg_write = 1;
+                mem_write = 0;
+                pc_update = 0;
+                branch = 0;
+
+                alu_op = `ALU_OP_ADD;
+                alu_src_a = `ALU_SRC_A_OLD_PC;
+                alu_src_b = `ALU_SRC_B_4;
+                result_src = `RES_SRC_ALU_RESULT;
+            end
+
+            // store rd = imm << 12 (it was lshifted by the immext unit)
+            `CTRL_FSM_LUIWB: begin
+                instr_write = 0;
+                reg_write = 1;
+                mem_write = 0;
+                pc_update = 0;
+                branch = 0;
+
+                result_src = `RES_SRC_IMM;
+            end
+
+            // calculate pc + (imm << 12) to be stored in CTRL_FSM_ALUWB (the
+            // immediate was lshifted by the immext unit)
+            `CTRL_FSM_EXEC_AUIPC: begin
+                instr_write = 0;
+                reg_write = 0;
+                mem_write = 0;
+                pc_update = 0;
+                branch = 0;
+
+                alu_op = `ALU_OP_ADD;
+                alu_src_a = `ALU_SRC_A_OLD_PC;
+                alu_src_b = `ALU_SRC_B_IMM;
             end
         endcase
     end
